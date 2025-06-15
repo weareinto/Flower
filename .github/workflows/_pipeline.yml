@@ -1,0 +1,191 @@
+on:
+  workflow_call:
+    inputs:
+      environment:
+        required: true
+        type: string
+      aws_region:
+        type: string
+        default: "us-east-1"
+      aws_iam_role:
+        required: true
+        type: string
+      version:
+        default: ""
+        type: string
+      deploy:
+        required: true
+        type: boolean
+
+permissions: write-all
+
+jobs:
+  publish-api:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: operto/pipelines/aws/template-env@main
+        with:
+          aws_region: ${{ inputs.aws_region }}
+          aws_iam_role: ${{ inputs.aws_iam_role }}
+          template_file: ./app/template.api.env
+          service: ${{ inputs.environment }}-nimbus-api
+          bucket: ecs-env-${{ inputs.aws_region }}-${{ inputs.environment }}
+      - uses: operto/pipelines/ecr-publish-image@main
+        with:
+          aws_region: ${{ inputs.aws_region }}
+          ecr_name: nimbus-api-ecr-${{ inputs.environment }}
+          iam_role_arn: ${{ inputs.aws_iam_role }}
+          dockerfile: ./docker/Dockerfile
+          docker_build_args: "--target api"
+
+  publish-workers:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: operto/pipelines/aws/template-env@main
+        with:
+          aws_region: ${{ inputs.aws_region }}
+          aws_iam_role: ${{ inputs.aws_iam_role }}
+          template_file: ./app/template.workers.env
+          service: ${{ inputs.environment }}-nimbus-workers
+          bucket: ecs-env-${{ inputs.aws_region }}-${{ inputs.environment }}
+      - uses: operto/pipelines/ecr-publish-image@main
+        with:
+          aws_region: ${{ inputs.aws_region }}
+          ecr_name: nimbus-workers-ecr-${{ inputs.environment }}
+          iam_role_arn: ${{ inputs.aws_iam_role }}
+          dockerfile: ./docker/Dockerfile
+          docker_build_args: "--target workers"
+
+  publish-flower:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: operto/pipelines/aws/template-env@main
+        with:
+          aws_region: ${{ inputs.aws_region }}
+          aws_iam_role: ${{ inputs.aws_iam_role }}
+          template_file: ./app/template.flower.env
+          service: ${{ inputs.environment }}-nimbus-flower
+          bucket: ecs-env-${{ inputs.aws_region }}-${{ inputs.environment }}
+      - uses: operto/pipelines/ecr-publish-image@main
+        with:
+          aws_region: ${{ inputs.aws_region }}
+          ecr_name: nimbus-flower-ecr-${{ inputs.environment }}
+          iam_role_arn: ${{ inputs.aws_iam_role }}
+          dockerfile: ./docker/Dockerfile
+          docker_build_args: "--target flower"
+
+  deploy-database:
+    needs: [publish-api, publish-workers, publish-flower]
+    if: inputs.deploy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13.2"
+          cache: "pip"
+      - run: pip install -r ./app/requirements.txt
+      - uses: operto/pipelines/aws/bastion-rds@main
+        id: bastion
+        with:
+          aws_region: ${{ inputs.aws_region }}
+          iam_role_arn: ${{ inputs.aws_iam_role }}
+          rds_stack: rds_nimbus
+      - uses: operto/pipelines/aws/template-env@main
+        with:
+          aws_region: ${{ inputs.aws_region }}
+          aws_iam_role: ${{ inputs.aws_iam_role }}
+          template_file: ./app/template.api.env
+          output_file: ./app/main.env
+      - uses: operto/pipelines/aws/template-env@main
+        with:
+          aws_region: ${{ inputs.aws_region }}
+          aws_iam_role: ${{ inputs.aws_iam_role }}
+          template_file: ./app/template.migrations.env
+          output_file: ./app/migrations.env
+          additional_variables: |
+            POSTGRES_HOST=localhost
+            POSTGRES_PORT=${{ steps.bastion.outputs.port }}
+      - name: Deploy Schema
+        working-directory: ./app
+        shell: bash
+        run: |
+          echo "Setting up environment variables..."
+          set -a
+          source ./main.env
+          source ./migrations.env
+          set +a
+
+          echo "Creating database..."
+          if ! PGPASSWORD=$POSTGRES_PASSWORD psql -h "$POSTGRES_HOST" -U "$POSTGRES_USER" -p "$POSTGRES_PORT" -d postgres -tAc "SELECT 1 FROM pg_database WHERE datname = '$POSTGRES_DB'" | grep -q 1; then
+            PGPASSWORD=$POSTGRES_PASSWORD createdb -h "$POSTGRES_HOST" -U "$POSTGRES_USER" -p "$POSTGRES_PORT" "$POSTGRES_DB"
+            PGPASSWORD=$POSTGRES_PASSWORD psql -h "$POSTGRES_HOST" -U "$POSTGRES_USER" -p "$POSTGRES_PORT" -d "$POSTGRES_DB" -c "CREATE SCHEMA IF NOT EXISTS backend_schema"
+          else
+            echo "Database $POSTGRES_DB already exists."
+          fi
+
+          echo "Applying migrations..."
+          make apply-migrations
+
+  deploy-api:
+    needs: [deploy-database]
+    if: inputs.deploy
+    runs-on: ubuntu-latest
+    concurrency:
+      group: ${{ inputs.environment }}-nimbus-api
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+      - uses: operto/pipelines/ecs-deploy-image@main
+        with:
+          aws_region: ${{ inputs.aws_region }}
+          iam_role_arn: ${{ inputs.aws_iam_role }}
+          ecr_name: nimbus-api-ecr-${{ inputs.environment }}
+          ecs_cluster: ${{ inputs.environment }}-nimbus-cluster
+          ecs_service: ${{ inputs.environment }}-nimbus-api
+          version: ${{ inputs.version }}
+          s3_env_bucket: ecs-env-${{ inputs.aws_region }}-${{ inputs.environment }}
+          s3_env_service_key: ${{ inputs.environment }}-nimbus-api
+
+  deploy-workers:
+    needs: [deploy-database]
+    if: inputs.deploy
+    runs-on: ubuntu-latest
+    concurrency:
+      group: ${{ inputs.environment }}-nimbus-workers
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+      - uses: operto/pipelines/ecs-deploy-image@main
+        with:
+          aws_region: ${{ inputs.aws_region }}
+          iam_role_arn: ${{ inputs.aws_iam_role }}
+          ecr_name: nimbus-workers-ecr-${{ inputs.environment }}
+          ecs_cluster: ${{ inputs.environment }}-nimbus-cluster
+          ecs_service: ${{ inputs.environment }}-nimbus-workers
+          version: ${{ inputs.version }}
+          s3_env_bucket: ecs-env-${{ inputs.aws_region }}-${{ inputs.environment }}
+          s3_env_service_key: ${{ inputs.environment }}-nimbus-workers
+
+  deploy-flower:
+    needs: [deploy-database]
+    if: inputs.deploy
+    runs-on: ubuntu-latest
+    concurrency:
+      group: ${{ inputs.environment }}-nimbus-flower
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+      - uses: operto/pipelines/ecs-deploy-image@main
+        with:
+          aws_region: ${{ inputs.aws_region }}
+          iam_role_arn: ${{ inputs.aws_iam_role }}
+          ecr_name: nimbus-flower-ecr-${{ inputs.environment }}
+          ecs_cluster: ${{ inputs.environment }}-nimbus-cluster
+          ecs_service: ${{ inputs.environment }}-nimbus-flower
+          version: ${{ inputs.version }}
+          s3_env_bucket: ecs-env-${{ inputs.aws_region }}-${{ inputs.environment }}
+          s3_env_service_key: ${{ inputs.environment }}-nimbus-flower

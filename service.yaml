@@ -2,7 +2,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: into-guesty-flower-service
-  namespace: gke-namespace
+  namespace: NAMESPACE
   annotations:
     cloud.google.com/neg: '{"ingress": true}'
     cloud.google.com/backend-config: '{"default": "flower-backendconfig"}'
@@ -14,4 +14,4 @@ spec:
   - protocol: TCP
     port: 80
     targetPort: 30005
-    nodePort: 30821
+    nodePort: NODE_PORT

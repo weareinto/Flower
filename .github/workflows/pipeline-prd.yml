@@ -1,0 +1,39 @@
+name: "Pipeline: Production"
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      deploy:
+        default: false
+        type: boolean
+        description: "Set to TRUE to deploy the application."
+      version:
+        default: ""
+        type: string
+        description: "Version number tagged after deployment."
+
+run-name: "${{ inputs.deploy && 'Deploy' || 'Publish' }}: PRD -> ${{ github.ref_name }} ${{ inputs.version }}"
+
+jobs:
+  pipeline:
+    if: github.ref_name == 'main' || startsWith(github.ref, 'refs/tags/')
+    uses: ./.github/workflows/_pipeline.yml
+    with:
+      environment: prd
+      aws_iam_role: arn:aws:iam::143094215647:role/operto-github-oidc-iam-role
+      deploy: ${{ inputs.deploy || false }} # workflow_dispatch inputs are not used on push events
+
+  post-deploy:
+    needs: [pipeline]
+    if: inputs.deploy && !startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: operto/pipelines/git-tag-release@main
+        with:
+          version: ${{ inputs.version }}

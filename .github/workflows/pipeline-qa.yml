@@ -1,0 +1,17 @@
+name: "Pipeline: Quality Assurance"
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+run-name: "Deploy: QA -> ${{ github.ref_name }}"
+
+jobs:
+  pipeline:
+    uses: ./.github/workflows/_pipeline.yml
+    with:
+      environment: qa
+      aws_iam_role: arn:aws:iam::174874719302:role/operto-github-oidc-iam-role
+      deploy: true

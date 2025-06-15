@@ -1,0 +1,86 @@
+####################################
+# cloudbuild_staging.yaml  (staging)
+####################################
+
+substitutions:
+
+  _NAMESPACE:     staging
+  _REGION:        us-central1
+  _CLUSTER_NAME:  into-cluster
+  _HOSTNAME:      str-flower-staging.weareinto.ai
+  _IMAGE_NAME:    into-guesty-flower-stg
+  _PIPELINE_NAME: into-guesty-flower-stg-pipeline # prod into-guesty-flower-pipeline
+  _TARGET_NAME:   flr-stg # prod flower
+  _NODE_PORT:     "31821" # prod "30821"
+  _SECRET_ID:     staging_api_workers_secrets
+
+steps:
+
+- id: patch-placeholders
+  name: ubuntu
+  entrypoint: bash
+  args:
+    - '-c'
+    - |
+      echo "PROJECT_ID=$PROJECT_ID  SHORT_SHA=$SHORT_SHA"
+
+      sed -i "s/PROJECT_ID/$PROJECT_ID/g" deployment.yaml clouddeploy.yaml fetch_secrets.py
+      sed -i "s/SHORT_SHA/$SHORT_SHA/g"  deployment.yaml
+
+      for f in deployment.yaml service.yaml ingress.yaml backendconfig.yaml; do
+        sed -i "s/NAMESPACE/${_NAMESPACE}/g" "$f"
+      done
+
+      sed -i "s/HOSTNAME/${_HOSTNAME}/g" ingress.yaml
+      sed -i "s/NODE_PORT/${_NODE_PORT}/g" service.yaml
+
+      sed -i "s/CLUSTER_NAME/${_CLUSTER_NAME}/g" clouddeploy.yaml
+      sed -i "s/PIPELINE_NAME/${_PIPELINE_NAME}/g" clouddeploy.yaml
+      sed -i "s/TARGET_NAME/${_TARGET_NAME}/g" clouddeploy.yaml
+
+      # swap prod image name to staging variant
+      sed -i "s/IMAGE_NAME/${_IMAGE_NAME}/g" deployment.yaml
+
+      sed -i "s/SECRET_ID/${_SECRET_ID}/g" fetch_secrets.py
+
+- id: build-image
+  name: gcr.io/cloud-builders/docker
+  args:
+    - 'build'
+    - '-t'
+    - "gcr.io/$PROJECT_ID/${_IMAGE_NAME}:$SHORT_SHA"
+    - '.'
+
+- name: gcr.io/cloud-builders/docker
+  id: push-image
+  args:
+    - 'push'
+    - "gcr.io/$PROJECT_ID/${_IMAGE_NAME}:$SHORT_SHA"
+
+- id: deploy-apply
+  name: gcr.io/google.com/cloudsdktool/cloud-sdk
+  entrypoint: bash
+  args:
+    - '-c'
+    - |
+      gcloud deploy apply \
+        --file=clouddeploy.yaml \
+        --region=${_REGION} \
+        --project="$PROJECT_ID"
+
+- id: create-release
+  name: gcr.io/google.com/cloudsdktool/cloud-sdk
+  entrypoint: bash
+  args:
+    - '-c'
+    - |
+      gcloud deploy releases create release-"$BUILD_ID" \
+        --delivery-pipeline=${_PIPELINE_NAME} \
+        --region=${_REGION} \
+        --images=flower_image=gcr.io/$PROJECT_ID/${_IMAGE_NAME}:$SHORT_SHA
+
+images:
+  - "gcr.io/$PROJECT_ID/${_IMAGE_NAME}:$SHORT_SHA"
+
+options:
+  defaultLogsBucketBehavior: REGIONAL_USER_OWNED_BUCKET

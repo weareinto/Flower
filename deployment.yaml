@@ -2,7 +2,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: into-guesty-flower
-  namespace: gke-namespace
+  namespace: NAMESPACE
 spec:
   selector:
     matchLabels:
@@ -20,7 +20,7 @@ spec:
       serviceAccountName: gke-sa  # Update to the new Kubernetes Service Account
       containers:
       - name: into-guesty-flower
-        image: "gcr.io/PROJECT_ID/into-guesty-flower:SHORT_SHA"
+        image: "gcr.io/PROJECT_ID/IMAGE_NAME:SHORT_SHA"
         ports:
         - containerPort: 30005
         resources:

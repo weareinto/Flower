@@ -2,6 +2,6 @@ apiVersion: cloud.google.com/v1
 kind: BackendConfig
 metadata:
   name: flower-backendconfig
-  namespace: gke-namespace
+  namespace: NAMESPACE
 spec:
   # leave empty

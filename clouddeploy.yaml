@@ -1,17 +1,17 @@
 apiVersion: deploy.cloud.google.com/v1beta1
 kind: DeliveryPipeline
 metadata:
-  name: into-guesty-flower-pipeline
+  name: PIPELINE_NAME
 description: flower Deployment Pipeline 
 serialPipeline:
   stages:
-  - targetId: flower
+  - targetId: TARGET_NAME
 
 ---
 apiVersion: deploy.cloud.google.com/v1beta1
 kind: Target
 metadata:
-  name: flower
+  name: TARGET_NAME
 description: Environment
 gke:
   cluster: projects/PROJECT_ID/locations/us-central1/clusters/CLUSTER_NAME
