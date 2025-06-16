@@ -1,92 +1,86 @@
-steps:
-
-# Fetch Project ID from the environment
-- id: 'fetch project id'
-  name: 'ubuntu'
-  entrypoint: 'bash'
-  args:
-  - '-c'
-  - |
-    echo "PROJECT_ID is $PROJECT_ID"
-    sed -i "s/PROJECT_ID/$PROJECT_ID/g" deployment.yaml
-    sed -i "s/PROJECT_ID/$PROJECT_ID/g" clouddeploy.yaml
-    sed -i "s/PROJECT_ID/$PROJECT_ID/g" fetch_secrets.py
-
-# Replace HOSTNAME in ingress.yaml based on the environment
-- id: 'set environment variables and replace HOSTNAME'
-  name: 'ubuntu'
-  entrypoint: 'bash'
-  args:
-  - '-c'
-  - |
-    if [[ "$PROJECT_ID" == "weareinto" ]]; then
-      echo "Setting environment to production"
-      sed -i "s/HOSTNAME/str-flower.weareinto.ai/g" ingress.yaml
-    else
-      echo "Setting environment to staging"
-      sed -i "s/HOSTNAME/str-flower-staging.weareinto.ai/g" ingress.yaml
-    fi
-    echo "Updated ingress.yaml:"
-    cat ingress.yaml
-
-# Replace placeholder in deployment.yaml with actual short SHA
-- name: 'ubuntu'
-  entrypoint: 'bash'
-  args:
-  - '-c'
-  - |
-    echo "SHORT_SHA is $SHORT_SHA"
-    sed -i "s/SHORT_SHA/$SHORT_SHA/g" deployment.yaml
-    echo "Updated deployment.yaml:"
-    cat deployment.yaml
-
-# Replace CLUSTER_NAME in clouddeploy.yaml based on the environment
-- id: 'set cluster name'
-  name: 'ubuntu'
-  entrypoint: 'bash'
-  args:
-  - '-c'
-  - |
-    if [[ "$PROJECT_ID" == "weareinto" ]]; then
-      echo "Setting cluster to into-cluster"
-      sed -i "s/CLUSTER_NAME/into-cluster/g" clouddeploy.yaml
-    else
-      echo "Setting cluster to into-guesty-api-staging-cluster"
-      sed -i "s/CLUSTER_NAME/into-guesty-api-staging-cluster/g" clouddeploy.yaml
-    fi
-    echo "Updated clouddeploy.yaml:"
-    cat clouddeploy.yaml
-
-# build container
-- id: 'build flask image'
-  name: 'gcr.io/cloud-builders/docker'
-  args: ['build', '-t', 'gcr.io/$PROJECT_ID/into-guesty-flower:$SHORT_SHA', '.']
-
-# Push to GCR
-- name: 'gcr.io/cloud-builders/docker'
-  id: 'pushing flask to GCR'
-  args: ['push', 'gcr.io/$PROJECT_ID/into-guesty-flower:$SHORT_SHA']
-
-# Register Cloud Deploy pipeline
-- name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
-  id: 'registering flask pipeline'
-  entrypoint: 'bash'
-  args:
-  - '-c'
-  - gcloud deploy apply --file=clouddeploy.yaml --region=us-central1 --project=$PROJECT_ID
-
-# Create a release
-- name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
-  entrypoint: 'bash'
-  args:
-  - '-c'
-  - >
-    gcloud deploy releases create release-$BUILD_ID
-    --delivery-pipeline=into-guesty-flower-pipeline
-    --region=us-central1
-    --images=flask_image=gcr.io/$PROJECT_ID/into-guesty-flower:$SHORT_SHA
+####################################
+# cloudbuild_staging.yaml  (staging)
+####################################
 
 substitutions:
-  _GCR_REGION: "us-central1"
+
+  _NAMESPACE:     gke-namespace
+  _REGION:        us-central1
+  _CLUSTER_NAME:  into-cluster
+  _HOSTNAME:      str-flower.weareinto.ai
+  _IMAGE_NAME:    into-guesty-flower
+  _PIPELINE_NAME: into-guesty-flower-pipeline # prod into-guesty-flower-pipeline
+  _TARGET_NAME:   flower # prod flower
+  _NODE_PORT:     "30821" # prod "30821"
+  _SECRET_ID:     api_workers_secrets
+
+steps:
+
+- id: patch-placeholders
+  name: ubuntu
+  entrypoint: bash
+  args:
+    - '-c'
+    - |
+      echo "PROJECT_ID=$PROJECT_ID  SHORT_SHA=$SHORT_SHA"
+
+      sed -i "s/PROJECT_ID/$PROJECT_ID/g" deployment.yaml clouddeploy.yaml fetch_secrets.py
+      sed -i "s/SHORT_SHA/$SHORT_SHA/g"  deployment.yaml
+
+      for f in deployment.yaml service.yaml ingress.yaml backendconfig.yaml; do
+        sed -i "s/NAMESPACE/${_NAMESPACE}/g" "$f"
+      done
+
+      sed -i "s/HOSTNAME/${_HOSTNAME}/g" ingress.yaml
+      sed -i "s/NODE_PORT/${_NODE_PORT}/g" service.yaml
+
+      sed -i "s/CLUSTER_NAME/${_CLUSTER_NAME}/g" clouddeploy.yaml
+      sed -i "s/PIPELINE_NAME/${_PIPELINE_NAME}/g" clouddeploy.yaml
+      sed -i "s/TARGET_NAME/${_TARGET_NAME}/g" clouddeploy.yaml
+
+      # swap prod image name to staging variant
+      sed -i "s/IMAGE_NAME/${_IMAGE_NAME}/g" deployment.yaml
+
+      sed -i "s/SECRET_ID/${_SECRET_ID}/g" fetch_secrets.py
+
+- id: build-image
+  name: gcr.io/cloud-builders/docker
+  args:
+    - 'build'
+    - '-t'
+    - "gcr.io/$PROJECT_ID/${_IMAGE_NAME}:$SHORT_SHA"
+    - '.'
+
+- name: gcr.io/cloud-builders/docker
+  id: push-image
+  args:
+    - 'push'
+    - "gcr.io/$PROJECT_ID/${_IMAGE_NAME}:$SHORT_SHA"
+
+- id: deploy-apply
+  name: gcr.io/google.com/cloudsdktool/cloud-sdk
+  entrypoint: bash
+  args:
+    - '-c'
+    - |
+      gcloud deploy apply \
+        --file=clouddeploy.yaml \
+        --region=${_REGION} \
+        --project="$PROJECT_ID"
+
+- id: create-release
+  name: gcr.io/google.com/cloudsdktool/cloud-sdk
+  entrypoint: bash
+  args:
+    - '-c'
+    - |
+      gcloud deploy releases create release-"$BUILD_ID" \
+        --delivery-pipeline=${_PIPELINE_NAME} \
+        --region=${_REGION} \
+        --images=flower_image=gcr.io/$PROJECT_ID/${_IMAGE_NAME}:$SHORT_SHA
+
 images:
-  - "gcr.io/$PROJECT_ID/into-guesty-flower:$SHORT_SHA" 
+  - "gcr.io/$PROJECT_ID/${_IMAGE_NAME}:$SHORT_SHA"
+
+options:
+  defaultLogsBucketBehavior: REGIONAL_USER_OWNED_BUCKET
